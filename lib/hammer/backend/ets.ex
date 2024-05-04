@@ -62,32 +62,8 @@ defmodule Hammer.Backend.ETS do
     GenServer.call(__MODULE__, :stop)
   end
 
-  @doc """
-  Record a hit in the bucket identified by `key`
-  """
-  @spec count_hit(
-          pid :: pid(),
-          key :: bucket_key,
-          now :: integer
-        ) ::
-          {:ok, count :: integer}
-          | {:error, reason :: any}
-  def count_hit(pid, key, now) do
-    count_hit(pid, key, now, 1)
-  end
-
-  @doc """
-  Record a hit in the bucket identified by `key`, with a custom increment
-  """
-  @spec count_hit(
-          pid :: pid(),
-          key :: bucket_key,
-          now :: integer,
-          increment :: integer
-        ) ::
-          {:ok, count :: integer}
-          | {:error, reason :: any}
-  def count_hit(_pid, key, now, increment) do
+  @impl Hammer.Backend
+  def count_hit(key, now, increment, _opts) do
     if :ets.member(@ets_table_name, key) do
       [count, _] =
         :ets.update_counter(@ets_table_name, key, [
@@ -108,17 +84,8 @@ defmodule Hammer.Backend.ETS do
       {:error, e}
   end
 
-  @doc """
-  Retrieve information about the bucket identified by `key`
-  """
-  @spec get_bucket(
-          pid :: pid(),
-          key :: bucket_key
-        ) ::
-          {:ok, info :: bucket_info}
-          | {:ok, nil}
-          | {:error, reason :: any}
-  def get_bucket(_pid, key) do
+  @impl Hammer.Backend
+  def get_bucket(key, _opts) do
     result =
       case :ets.lookup(@ets_table_name, key) do
         [] ->
@@ -134,16 +101,8 @@ defmodule Hammer.Backend.ETS do
       {:error, e}
   end
 
-  @doc """
-  Delete all buckets associated with `id`.
-  """
-  @spec delete_buckets(
-          pid :: pid(),
-          id :: String.t()
-        ) ::
-          {:ok, count_deleted :: integer}
-          | {:error, reason :: any}
-  def delete_buckets(_pid, id) do
+  @impl Hammer.Backend
+  def delete_buckets(id, _opts) do
     # Compiled from:
     #   fun do {{bucket_number, bid},_,_,_} when bid == ^id -> true end
     count_deleted =
@@ -159,6 +118,7 @@ defmodule Hammer.Backend.ETS do
 
   ## GenServer Callbacks
 
+  @impl GenServer
   def init(args) do
     cleanup_interval_ms = Keyword.get(args, :cleanup_interval_ms)
     expiry_ms = Keyword.get(args, :expiry_ms)
@@ -193,10 +153,12 @@ defmodule Hammer.Backend.ETS do
     {:ok, state}
   end
 
+  @impl GenServer
   def handle_call(:stop, _from, state) do
     {:stop, :normal, :ok, state}
   end
 
+  @impl GenServer
   def handle_info(:prune, state) do
     %{expiry_ms: expiry_ms} = state
     now = Utils.timestamp()

@@ -1,14 +1,6 @@
 defmodule Hammer.Utils do
   @moduledoc false
 
-  def pool_name do
-    pool_name(:single)
-  end
-
-  def pool_name(name) do
-    String.to_atom("hammer_backend_#{name}_pool")
-  end
-
   # Returns Erlang Time as milliseconds since 00:00 GMT, January 1, 1970
   def timestamp do
     DateTime.to_unix(DateTime.utc_now(), :millisecond)

@@ -53,16 +53,15 @@ defmodule Hammer.Application do
   """
 
   use Application
-  require Logger
 
   def start(_type, _args) do
-    config =
+    children =
       Application.get_env(
         :hammer,
         :backend,
         {Hammer.Backend.ETS, []}
       )
 
-    Hammer.Supervisor.start_link(config, name: Hammer.Supervisor)
+    Hammer.Supervisor.start_link(children, name: Hammer.Supervisor)
   end
 end

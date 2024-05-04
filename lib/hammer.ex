@@ -4,14 +4,73 @@ defmodule Hammer do
 
   This is the main API for the Hammer rate-limiter. This module assumes a
   backend pool has been started, most likely by the Hammer application.
+
+      defmodule MyApp.RateLimit do
+        use Hammer, backend: Hammer.Backend.ETS
+      end
+
+      MyApp.RateLimit.start_link(expiry_ms: :timer.minutes(10), cleanup_interval_ms: :timer.minutes(1))
+
   """
 
   alias Hammer.Utils
 
-  @spec check_rate(id :: String.t(), scale_ms :: integer, limit :: integer) ::
-          {:allow, count :: integer}
-          | {:deny, limit :: integer}
-          | {:error, reason :: any}
+  @doc false
+  defmacro __using__(opts) do
+    quote bind_quoted: [opts: opts] do
+      backend = Keyword.fetch!(opts, :backend)
+
+      unless is_atom(backend) do
+        raise ArgumentError,
+              "expected :backend to be a module name like Hammer.Backend.ETS, got: #{inspect(backend)}"
+      end
+
+      @behaviour Hammer
+      @backend backend
+
+      def __backend__ do
+        @backend
+      end
+
+      def start_link(opts) do
+        @backend.start_link(opts)
+      end
+
+      def child_spec(opts) do
+        @backend.child_spec(opts)
+      end
+
+      def check_rate(id, scale_ms, limit) do
+        @backend.check_rate_inc(id, scale_ms, limit, 1)
+      end
+
+      def check_rate_inc(id, scale_ms, limit, increment) do
+        @backend.check_rate_inc(id, scale_ms, limit, increment)
+      end
+
+      def inspect_bucket(id, scale_ms, limit) do
+        {stamp, key} = Hammer.Utils.stamp_key(id, scale_ms)
+        ms_to_next_bucket = elem(key, 0) * scale_ms + scale_ms - stamp
+
+        case @backend.get_bucket(key) do
+          {:ok, nil} ->
+            {:ok, {0, limit, ms_to_next_bucket, nil, nil}}
+
+          {:ok, {_, count, created_at, updated_at}} ->
+            count_remaining = if limit > count, do: limit - count, else: 0
+            {:ok, {count, count_remaining, ms_to_next_bucket, created_at, updated_at}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+      end
+
+      def delete_buckets(id) do
+        @backend.delete_buckets(id)
+      end
+    end
+  end
+
   @doc """
   Check if the action you wish to perform is within the bounds of the rate-limit.
 
@@ -27,16 +86,18 @@ defmodule Hammer do
   Example:
 
       user_id = 42076
-      case check_rate("file_upload:\#{user_id}", 60_000, 5) do
+      case MyHammer.check_rate("file_upload:\#{user_id}", 60_000, 5) do
         {:allow, _count} ->
           # do the file upload
         {:deny, _limit} ->
           # render an error page or something
       end
+
   """
-  def check_rate(id, scale_ms, limit) do
-    check_rate(:single, id, scale_ms, limit)
-  end
+  @callback check_rate(id :: String.t(), scale_ms :: integer, limit :: integer) ::
+              {:allow, count :: integer}
+              | {:deny, limit :: integer}
+              | {:error, reason :: any}
 
   @spec check_rate(backend :: atom, id :: String.t(), scale_ms :: integer, limit :: integer) ::
           {:allow, count :: integer}
@@ -141,34 +202,12 @@ defmodule Hammer do
     inspect_bucket(:single, id, scale_ms, limit)
   end
 
-  @spec inspect_bucket(backend :: atom, id :: String.t(), scale_ms :: integer, limit :: integer) ::
-          {:ok,
-           {count :: integer, count_remaining :: integer, ms_to_next_bucket :: integer,
-            created_at :: integer | nil, updated_at :: integer | nil}}
-          | {:error, reason :: any}
   @doc """
   Same as inspect_bucket/3, but allows specifying a backend
   """
   def inspect_bucket(backend, id, scale_ms, limit) do
-    {stamp, key} = Utils.stamp_key(id, scale_ms)
-    ms_to_next_bucket = elem(key, 0) * scale_ms + scale_ms - stamp
-
-    case call_backend(backend, :get_bucket, [key]) do
-      {:ok, nil} ->
-        {:ok, {0, limit, ms_to_next_bucket, nil, nil}}
-
-      {:ok, {_, count, created_at, updated_at}} ->
-        count_remaining = if limit > count, do: limit - count, else: 0
-        {:ok, {count, count_remaining, ms_to_next_bucket, created_at, updated_at}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
   end
 
-  @spec delete_buckets(id :: String.t()) ::
-          {:ok, count :: integer}
-          | {:error, reason :: any}
   @doc """
   Delete all buckets belonging to the provided id, including the current one.
   Effectively resets the rate-limit for the id.
@@ -183,82 +222,8 @@ defmodule Hammer do
   Example:
 
       user_id = 2406
-      {:ok, _count} = delete_buckets("file_uploads:\#{user_id}")
+      {:ok, _count} = MyHammer.delete_buckets("file_uploads:\#{user_id}")
 
   """
-  def delete_buckets(id) do
-    delete_buckets(:single, id)
-  end
-
-  @spec delete_buckets(backend :: atom, id :: String.t()) ::
-          {:ok, count :: integer}
-          | {:error, reason :: any}
-  @doc """
-  Same as delete_buckets/1, but allows specifying a backend
-  """
-  def delete_buckets(backend, id) do
-    call_backend(backend, :delete_buckets, [id])
-  end
-
-  @spec make_rate_checker(id_prefix :: String.t(), scale_ms :: integer, limit :: integer) ::
-          (id :: String.t() ->
-             {:allow, count :: integer}
-             | {:deny, limit :: integer}
-             | {:error, reason :: any})
-  @doc """
-  Make a rate-checker function, with the given `id` prefix, scale_ms and limit.
-
-  Arguments:
-
-  - `id_prefix`: String prefix to the `id`
-  - `scale_ms`: Integer indicating size of bucket in milliseconds
-  - `limit`: Integer maximum count of actions within the bucket
-
-  Returns a function which accepts an `id` suffix, which will be combined with
-  the `id_prefix`. Calling this returned function is equivalent to:
-  `Hammer.check_rate("\#{id_prefix}\#{id}", scale_ms, limit)`
-
-  Example:
-
-      chat_rate_limiter = make_rate_checker("send_chat_message:", 60_000, 20)
-      user_id = 203517
-      case chat_rate_limiter.(user_id) do
-        {:allow, _count} ->
-          # allow chat message
-        {:deny, _limit} ->
-          # deny
-      end
-  """
-  def make_rate_checker(id_prefix, scale_ms, limit) do
-    make_rate_checker(:single, id_prefix, scale_ms, limit)
-  end
-
-  @spec make_rate_checker(
-          backend :: atom,
-          id_prefix :: String.t(),
-          scale_ms :: integer,
-          limit :: integer
-        ) ::
-          (id :: String.t() ->
-             {:allow, count :: integer}
-             | {:deny, limit :: integer}
-             | {:error, reason :: any})
-  @doc """
-  """
-  def make_rate_checker(backend, id_prefix, scale_ms, limit) do
-    fn id ->
-      check_rate(backend, "#{id_prefix}#{id}", scale_ms, limit)
-    end
-  end
-
-  defp call_backend(which, function, args) do
-    pool = Utils.pool_name(which)
-    backend = Utils.get_backend_module(which)
-
-    :poolboy.transaction(
-      pool,
-      fn pid -> apply(backend, function, [pid | args]) end,
-      60_000
-    )
-  end
+  @callback delete_buckets(id :: String.t()) :: {:ok, count :: integer} | {:error, reason :: any}
 end
