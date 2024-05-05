@@ -10,10 +10,14 @@ defmodule Hammer do
       end
 
       MyApp.RateLimit.start_link(expiry_ms: :timer.minutes(10), cleanup_interval_ms: :timer.minutes(1))
+      {:allow, 1] = MyApp.RateLimit.hit("some-key", _scale = :timer.seconds(60), _limit = 10)
+      {:allow, 1} = MyApp.RateLimit.get("some-key", _scale = :timer.seconds(60), _limit = 10)
+      MyApp.RateLimit.wait("some-key", _scale = :timer.seconds(60), _limit = 10)
+
+      backend = Hammer.backend(Hammer.Backend.ETS, opts)
+      Hammer.check_rate(backend, )
 
   """
-
-  alias Hammer.Utils
 
   @doc false
   defmacro __using__(opts) do
@@ -99,81 +103,21 @@ defmodule Hammer do
               | {:deny, limit :: integer}
               | {:error, reason :: any}
 
-  @spec check_rate(backend :: atom, id :: String.t(), scale_ms :: integer, limit :: integer) ::
-          {:allow, count :: integer}
-          | {:deny, limit :: integer}
-          | {:error, reason :: any}
-  @doc """
-  Same as `check_rate/3`, but allows specifying a backend.
-  """
-  def check_rate(backend, id, scale_ms, limit) do
-    {stamp, key} = Utils.stamp_key(id, scale_ms)
-
-    case call_backend(backend, :count_hit, [key, stamp]) do
-      {:ok, count} ->
-        if count > limit do
-          {:deny, limit}
-        else
-          {:allow, count}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @spec check_rate_inc(
-          id :: String.t(),
-          scale_ms :: integer,
-          limit :: integer,
-          increment :: integer
-        ) ::
-          {:allow, count :: integer}
-          | {:deny, limit :: integer}
-          | {:error, reason :: any}
   @doc """
   Same as check_rate/3, but allows the increment number to be specified.
   This is useful for limiting apis which have some idea of 'cost', where the cost
   of each hit can be specified.
   """
-  def check_rate_inc(id, scale_ms, limit, increment) do
-    check_rate_inc(:single, id, scale_ms, limit, increment)
-  end
+  @callback check_rate_inc(
+              id :: String.t(),
+              scale_ms :: integer,
+              limit :: integer,
+              increment :: integer
+            ) ::
+              {:allow, count :: integer}
+              | {:deny, limit :: integer}
+              | {:error, reason :: any}
 
-  @spec check_rate_inc(
-          backend :: atom,
-          id :: String.t(),
-          scale_ms :: integer,
-          limit :: integer,
-          increment :: integer
-        ) ::
-          {:allow, count :: integer}
-          | {:deny, limit :: integer}
-          | {:error, reason :: any}
-  @doc """
-  Same as check_rate_inc/4, but allows specifying a backend.
-  """
-  def check_rate_inc(backend, id, scale_ms, limit, increment) do
-    {stamp, key} = Utils.stamp_key(id, scale_ms)
-
-    case call_backend(backend, :count_hit, [key, stamp, increment]) do
-      {:ok, count} ->
-        if count > limit do
-          {:deny, limit}
-        else
-          {:allow, count}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @spec inspect_bucket(id :: String.t(), scale_ms :: integer, limit :: integer) ::
-          {:ok,
-           {count :: integer, count_remaining :: integer, ms_to_next_bucket :: integer,
-            created_at :: integer | nil, updated_at :: integer | nil}}
-          | {:error, reason :: any}
   @doc """
   Inspect bucket to get count, count_remaining, ms_to_next_bucket, created_at,
   updated_at. This function is free of side-effects and should be called with
@@ -198,15 +142,11 @@ defmodule Hammer do
       {:ok, {1, 2499, 29381612, 1450281014468, 1450281014468}}
 
   """
-  def inspect_bucket(id, scale_ms, limit) do
-    inspect_bucket(:single, id, scale_ms, limit)
-  end
-
-  @doc """
-  Same as inspect_bucket/3, but allows specifying a backend
-  """
-  def inspect_bucket(backend, id, scale_ms, limit) do
-  end
+  @callback inspect_bucket(id :: String.t(), scale_ms :: integer, limit :: integer) ::
+              {:ok,
+               {count :: integer, count_remaining :: integer, ms_to_next_bucket :: integer,
+                created_at :: integer | nil, updated_at :: integer | nil}}
+              | {:error, reason :: any}
 
   @doc """
   Delete all buckets belonging to the provided id, including the current one.
