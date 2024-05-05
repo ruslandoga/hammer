@@ -1,4 +1,4 @@
-defmodule Hammer.Mixfile do
+defmodule Hammer.MixProject do
   use Mix.Project
 
   @source_url "https://github.com/ExHammer/hammer"
@@ -20,8 +20,7 @@ defmodule Hammer.Mixfile do
   end
 
   def application do
-    # Specify extra applications you'll use from Erlang/Elixir
-    [mod: {Hammer.Application, []}, extra_applications: [:logger, :runtime_tools]]
+    [extra_applications: []]
   end
 
   defp deps do
